@@ -437,7 +437,8 @@ export default function Home() {
         provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
       });
       const data = await r.json();
-      setConvertedChapters(prev => ({ ...prev, [chapterNumber]: data }));
+      const converted = data.converted || data;
+      setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
       setSelectedChapter(chapterNumber);
       setStep("viewer");
       toast({ title: "Conversion complete!", description: `Chapter ${chapterNumber}: ${chapter.title}` });
@@ -462,8 +463,12 @@ export default function Home() {
           provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
         });
         const data = await r.json();
-        setConvertedChapters(prev => ({ ...prev, [ch.number]: data }));
-      } catch {}
+        const converted = data.converted || data;
+        setConvertedChapters(prev => ({ ...prev, [ch.number]: converted }));
+      } catch (err: any) {
+        console.error(`Convert chapter ${unconverted[i].number} failed:`, err);
+        toast({ title: `Chapter ${unconverted[i].number} failed`, description: err.message || "Conversion error", variant: "destructive" });
+      }
       if (i < unconverted.length - 1) await new Promise(r => setTimeout(r, 3000));
     }
     setConvertingAll(false); setConvertAllProgress(0);
