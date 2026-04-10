@@ -380,12 +380,13 @@ export default function Home() {
       }
 
       // Concatenate chapter contents into manuscript text
+      // Story Forge chapters already include their own headers — don't duplicate
       const manuscriptText = chapters
-        .map((ch: any, idx: number) => {
-          const title = ch.title || ch.name || `Chapter ${idx + 1}`;
+        .map((ch: any) => {
           const content = ch.content || ch.text || ch.body || "";
-          return `Chapter ${idx + 1}: ${title}\n\n${content}`;
+          return content.trim();
         })
+        .filter((c: string) => c.length > 0)
         .join("\n\n---\n\n");
 
       setText(manuscriptText);
