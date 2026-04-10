@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node --max-old-space-size=512 dist/index.cjs"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
