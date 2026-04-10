@@ -609,6 +609,24 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return { provider, apiKey };
   }
 
+  // ── User-level API key persistence ──
+
+  app.get("/api/user/apikey", (req: Request, res: Response) => {
+    try {
+      const row = sqlite.prepare("SELECT api_provider, api_key FROM users WHERE id = ?").get(req.userId!) as any;
+      if (!row) return res.json({ provider: "google", apiKey: "" });
+      return res.json({ provider: row.api_provider || "google", apiKey: row.api_key || "" });
+    } catch { return res.json({ provider: "google", apiKey: "" }); }
+  });
+
+  app.post("/api/user/apikey", (req: Request, res: Response) => {
+    try {
+      const { provider, apiKey } = req.body;
+      sqlite.prepare("UPDATE users SET api_provider = ?, api_key = ? WHERE id = ?").run(provider || "google", apiKey || "", req.userId!);
+      return res.json({ ok: true });
+    } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  });
+
   // ── Session Save/Load (per-user) ──
 
   app.post("/api/session/save", (req: Request, res: Response) => {

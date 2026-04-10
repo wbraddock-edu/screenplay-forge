@@ -91,6 +91,8 @@ const newCols: [string, string][] = [
   ["subscription_plan", "TEXT"],
   ["subscription_expires_at", "TEXT"],
   ["role", "TEXT DEFAULT 'user'"],
+  ["api_provider", "TEXT"],
+  ["api_key", "TEXT"],
 ];
 
 for (const [col, type] of newCols) {

@@ -202,6 +202,26 @@ export default function Home() {
 
   useEffect(() => { if (isAuthenticated) loadProjectList(); }, [isAuthenticated, loadProjectList]);
 
+  // Load saved API key on login
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    apiRequest("GET", "/api/user/apikey").then(r => r.json()).then(data => {
+      if (data.apiKey) setApiKey(data.apiKey);
+      if (data.provider) setProvider(data.provider);
+    }).catch(() => {});
+  }, [isAuthenticated]);
+
+  // Save API key when it changes (debounced)
+  const apiKeySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!isAuthenticated || !apiKey) return;
+    if (apiKeySaveTimer.current) clearTimeout(apiKeySaveTimer.current);
+    apiKeySaveTimer.current = setTimeout(() => {
+      apiRequest("POST", "/api/user/apikey", { provider, apiKey }).catch(() => {});
+    }, 1500);
+    return () => { if (apiKeySaveTimer.current) clearTimeout(apiKeySaveTimer.current); };
+  }, [isAuthenticated, provider, apiKey]);
+
   const openProject = useCallback(async (id: number) => {
     try {
       const r = await apiRequest("GET", `/api/projects/${id}`);
@@ -242,7 +262,7 @@ export default function Home() {
       const r = await apiRequest("POST", "/api/projects", { name: "Untitled Project" });
       const proj = await r.json();
       setCurrentProjectId(proj.id);
-      setText(""); setProvider("google"); setApiKey("");
+      setText("");
       setDetectedChapters([]); setConvertedChapters({});
       setGenre("drama"); setPacing("standard"); setDialogueStyle("naturalized"); setSceneDetail("standard");
       setStep("upload"); setShowProjectList(false);
