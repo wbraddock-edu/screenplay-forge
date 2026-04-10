@@ -854,7 +854,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(400).json({ error: parsed.error.errors[0].message });
       }
 
-      const { text, sourceType } = parsed.data;
+      const { text } = parsed.data;
+      const sourceType = "prose manuscript";
       const { provider, apiKey } = resolveApiKey(req);
 
       // Break text into chunks for large manuscripts

@@ -127,6 +127,7 @@ export default function Home() {
   const [sfLoading, setSfLoading] = useState(false);
   const [sfProjects, setSfProjects] = useState<any[]>([]);
   const [sfImporting, setSfImporting] = useState<string | null>(null);
+  const [autoScanAfterImport, setAutoScanAfterImport] = useState(false);
 
   // ── Auto-save ref ──
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -386,7 +387,10 @@ export default function Home() {
       }
 
       setSfDialogOpen(false);
-      toast({ title: "Imported from Story Forge!", description: `"${projectTitle}" loaded with ${chapters.length} chapters. Click "Scan for Chapters" to detect them.` });
+      toast({ title: "Imported from Story Forge!", description: `"${projectTitle}" loaded with ${chapters.length} chapters. Scanning now...` });
+
+      // Auto-trigger scan after import via flag
+      setAutoScanAfterImport(true);
     } catch (err: any) {
       toast({ title: "Import failed", description: err.message, variant: "destructive" });
     } finally {
@@ -413,6 +417,14 @@ export default function Home() {
       setStep("upload");
     } finally { setIsScanning(false); }
   }, [text, provider, apiKey, toast]);
+
+  // Auto-scan after Story Forge import
+  useEffect(() => {
+    if (autoScanAfterImport && text.length >= 50) {
+      setAutoScanAfterImport(false);
+      handleScan();
+    }
+  }, [autoScanAfterImport, text, handleScan]);
 
   // ── Convert ──
   const handleConvert = useCallback(async (chapterNumber: number) => {
