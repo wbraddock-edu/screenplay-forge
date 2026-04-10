@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useTheme } from "@/components/theme-provider";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
@@ -17,7 +18,7 @@ import {
   ChevronRight, ArrowLeft, Eye, EyeOff, Plus, Trash2, Pencil,
   FolderOpen, LogOut, Settings, ChevronDown, User, CheckCircle2,
   Film, BookOpen, Video, Users, MapPin, Box, Clapperboard,
-  Volume2, Crown, Clock, CreditCard, KeyRound, AlertCircle,
+  Volume2, Crown, Clock, CreditCard, KeyRound, AlertCircle, Link2,
   type LucideIcon,
 } from "lucide-react";
 import type { DetectedChapter, ConvertedChapter, ScreenplayElementType } from "@shared/schema";
@@ -120,6 +121,12 @@ export default function Home() {
 
   // ── FAQ ──
   const [openFaq, setOpenFaq] = useState<number | null>(null);
+
+  // ── Story Forge Import ──
+  const [sfDialogOpen, setSfDialogOpen] = useState(false);
+  const [sfLoading, setSfLoading] = useState(false);
+  const [sfProjects, setSfProjects] = useState<any[]>([]);
+  const [sfImporting, setSfImporting] = useState<string | null>(null);
 
   // ── Auto-save ref ──
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -316,6 +323,76 @@ export default function Home() {
       toast({ title: "Unsupported file", description: "Upload a .txt or .docx file.", variant: "destructive" });
     }
   }, [toast]);
+
+  // ── Story Forge Import ──
+  const handleLoadStoryForgeProjects = useCallback(async () => {
+    setSfLoading(true);
+    setSfDialogOpen(true);
+    setSfProjects([]);
+    try {
+      const r = await apiRequest("GET", "/api/storyforge/projects");
+      const data = await r.json();
+      const projects = data.projects || (Array.isArray(data) ? data : []);
+      setSfProjects(projects);
+      if (projects.length === 0) {
+        toast({ title: "No projects found", description: "No Story Forge projects found for your account.", variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "Story Forge connection failed", description: err.message, variant: "destructive" });
+      setSfDialogOpen(false);
+    } finally {
+      setSfLoading(false);
+    }
+  }, [toast]);
+
+  const handleImportStoryForgeProject = useCallback(async (project: any) => {
+    const projectTitle = project.title || project.name || "Untitled";
+    setSfImporting(projectTitle);
+    try {
+      const r = await apiRequest("GET", `/api/storyforge/chapters?project=${encodeURIComponent(projectTitle)}`);
+      const data = await r.json();
+      const chapters = data.chapters || (Array.isArray(data) ? data : []);
+      if (chapters.length === 0) {
+        toast({ title: "No chapters found", description: `"${projectTitle}" has no chapters to import.`, variant: "destructive" });
+        setSfImporting(null);
+        return;
+      }
+
+      // Concatenate chapter contents into manuscript text
+      const manuscriptText = chapters
+        .map((ch: any, idx: number) => {
+          const title = ch.title || ch.name || `Chapter ${idx + 1}`;
+          const content = ch.content || ch.text || ch.body || "";
+          return `Chapter ${idx + 1}: ${title}\n\n${content}`;
+        })
+        .join("\n\n---\n\n");
+
+      setText(manuscriptText);
+
+      // Auto-set genre if available
+      if (project.genre) {
+        const genreLower = project.genre.toLowerCase();
+        if (GENRES.includes(genreLower)) {
+          setGenre(genreLower);
+        }
+      }
+
+      // Auto-populate project name
+      if (currentProjectId) {
+        try {
+          await apiRequest("PATCH", `/api/projects/${currentProjectId}/rename`, { name: projectTitle });
+          loadProjectList();
+        } catch {}
+      }
+
+      setSfDialogOpen(false);
+      toast({ title: "Imported from Story Forge!", description: `"${projectTitle}" loaded with ${chapters.length} chapters. Click "Scan for Chapters" to detect them.` });
+    } catch (err: any) {
+      toast({ title: "Import failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSfImporting(null);
+    }
+  }, [toast, currentProjectId, loadProjectList]);
 
   // ── Scan ──
   const handleScan = useCallback(async () => {
@@ -898,10 +975,79 @@ export default function Home() {
               </Card>
             </div>
 
+            <div className="flex items-center gap-2 text-xs text-gray-500 justify-center">
+              <Separator className="bg-gray-800 flex-1" />
+              <span>or import from</span>
+              <Separator className="bg-gray-800 flex-1" />
+            </div>
+
+            <Button className="w-full bg-teal-700 hover:bg-teal-600 text-white font-semibold h-12 text-base border border-teal-600" onClick={handleLoadStoryForgeProjects} disabled={sfLoading}>
+              {sfLoading ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Link2 className="w-5 h-5 mr-2" />}
+              {sfLoading ? "Connecting to Story Forge..." : "Load My Story Forge Projects"}
+            </Button>
+
             <Button className="w-full bg-[#00d4aa] hover:bg-[#00b894] text-black font-semibold h-12 text-base" onClick={handleScan} disabled={isScanning || text.length < 50} data-testid="button-scan">
               {isScanning ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <FileText className="w-5 h-5 mr-2" />}
               {isScanning ? "Scanning..." : "Scan for Chapters"}
             </Button>
+
+            {/* Story Forge Project Selection Dialog */}
+            <Dialog open={sfDialogOpen} onOpenChange={setSfDialogOpen}>
+              <DialogContent className="bg-[#12131a] border-gray-800 text-white max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 text-white">
+                    <Link2 className="w-5 h-5 text-[#00d4aa]" />
+                    Import from Story Forge
+                  </DialogTitle>
+                  <DialogDescription className="text-gray-400">
+                    Select a project to import its chapters as your manuscript text.
+                  </DialogDescription>
+                </DialogHeader>
+                {sfLoading ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-3">
+                    <Loader2 className="w-10 h-10 animate-spin text-[#00d4aa]" />
+                    <p className="text-gray-400 text-sm">Connecting to Story Forge...</p>
+                  </div>
+                ) : sfProjects.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400">
+                    <BookOpen className="w-10 h-10 mx-auto mb-3 opacity-50" />
+                    <p>No projects found in your Story Forge account.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 mt-2">
+                    {sfProjects.map((proj: any, idx: number) => (
+                      <button
+                        key={proj.id || idx}
+                        className="w-full text-left p-4 rounded-lg bg-[#1a1b26] border border-gray-700 hover:border-[#00d4aa]/50 hover:bg-[#1a1b26]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={() => handleImportStoryForgeProject(proj)}
+                        disabled={!!sfImporting}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-semibold text-white truncate">{proj.title || proj.name || "Untitled"}</h3>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {(proj.genre) && (
+                                <Badge variant="outline" className="border-gray-600 text-gray-400 text-xs">{proj.genre}</Badge>
+                              )}
+                              {(proj.chapterCount || proj.chapter_count) && (
+                                <span className="text-xs text-gray-500">{proj.chapterCount || proj.chapter_count} chapters</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0">
+                            {sfImporting === (proj.title || proj.name) ? (
+                              <Loader2 className="w-5 h-5 animate-spin text-[#00d4aa]" />
+                            ) : (
+                              <ChevronRight className="w-5 h-5 text-gray-500" />
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
           </div>
         )}
 

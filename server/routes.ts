@@ -800,6 +800,51 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.json({ users: allUsers });
   });
 
+  // ── Story Forge cross-app integration ───────────────────────────────────────────
+  const STORY_FORGE_URL = process.env.STORY_FORGE_URL || "https://story-forge-backend-production.up.railway.app";
+  const FORGE_SECRET = process.env.FORGE_CROSS_APP_SECRET || "";
+
+  // List all Story Forge projects for the logged-in user's email
+  app.get("/api/storyforge/projects", async (req: Request, res: Response) => {
+    if (!FORGE_SECRET) return res.status(503).json({ error: "FORGE_CROSS_APP_SECRET not configured in Screenplay Forge Railway Variables" });
+    const userRow = sqlite.prepare("SELECT * FROM users WHERE id = ?").get(req.userId!) as any;
+    if (!userRow) return res.status(404).json({ error: "User not found" });
+    try {
+      const url = `${STORY_FORGE_URL}/api/shared/projects?secret=${encodeURIComponent(FORGE_SECRET)}&email=${encodeURIComponent(userRow.email)}`;
+      console.log("[StoryForge] Fetching:", STORY_FORGE_URL + "/api/shared/projects", "secret set:", !!FORGE_SECRET);
+      const r = await fetch(url);
+      const body = await r.json().catch(() => ({}));
+      console.log("[StoryForge] Status:", r.status, JSON.stringify(body).slice(0, 100));
+      if (!r.ok) return res.status(r.status).json({ error: `Story Forge returned ${r.status}`, detail: body, calledUrl: STORY_FORGE_URL });
+      res.json(body);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to reach Story Forge", url: STORY_FORGE_URL });
+    }
+  });
+
+  // Fetch all chapters for a specific project by title
+  app.get("/api/storyforge/chapters", async (req: Request, res: Response) => {
+    if (!FORGE_SECRET) return res.status(503).json({ error: "FORGE_CROSS_APP_SECRET not configured in Screenplay Forge" });
+    const userRow = sqlite.prepare("SELECT * FROM users WHERE id = ?").get(req.userId!) as any;
+    if (!userRow) return res.status(404).json({ error: "User not found" });
+    const project = req.query.project as string;
+    if (!project) return res.status(400).json({ error: "project query param required" });
+    res.setTimeout(60000);
+    try {
+      const url = `${STORY_FORGE_URL}/api/shared/chapters?secret=${encodeURIComponent(FORGE_SECRET)}&email=${encodeURIComponent(userRow.email)}&project=${encodeURIComponent(project)}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 58000);
+      const r = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) return res.status(r.status).json({ error: `Story Forge returned ${r.status}`, detail: body });
+      res.json(body);
+    } catch (e: any) {
+      const msg = e.name === "AbortError" ? "Story Forge took too long to respond (timeout)" : e.message || "Failed to reach Story Forge";
+      res.status(500).json({ error: msg, url: STORY_FORGE_URL });
+    }
+  });
+
   // ── Step 1: Scan text for chapters ──
   app.post("/api/scan", async (req: Request, res: Response) => {
     if (!requireActiveSubscription(req, res)) return;
