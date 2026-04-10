@@ -889,7 +889,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const { provider, apiKey } = resolveApiKey(req);
 
       // Break text into chunks for large manuscripts
-      const CHUNK_SIZE = 60000;
+      // 30k chars per chunk to stay well within Gemini token limits
+      const CHUNK_SIZE = 30000;
       const chunks: string[] = [];
       if (text.length <= CHUNK_SIZE) {
         chunks.push(text);
@@ -913,34 +914,46 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       let allChapters: DetectedChapter[] = [];
       for (let i = 0; i < chunks.length; i++) {
         const chunkLabel = chunks.length > 1 ? ` (Part ${i + 1} of ${chunks.length})` : '';
-        try {
-          const result = await callTextAI(
-            provider,
-            apiKey,
-            SCAN_SYSTEM_PROMPT,
-            `Here is ${sourceType} text to analyze for chapters/sections${chunkLabel}:\n\n${chunks[i]}`
-          );
+        let rawResult = '';
+        let success = false;
 
-          let jsonStr = result;
-          jsonStr = jsonStr.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-          const firstBrace = jsonStr.indexOf("{");
-          const firstBracket = jsonStr.indexOf("[");
-          const start = Math.min(
-            firstBrace !== -1 ? firstBrace : Infinity,
-            firstBracket !== -1 ? firstBracket : Infinity
-          );
-          if (start !== Infinity) {
-            const lastBrace = jsonStr.lastIndexOf("}");
-            const lastBracket = jsonStr.lastIndexOf("]");
-            const end = Math.max(lastBrace, lastBracket);
-            jsonStr = jsonStr.substring(start, end + 1);
+        // Retry up to 2 times per chunk
+        for (let attempt = 0; attempt < 2 && !success; attempt++) {
+          try {
+            if (attempt > 0) {
+              console.log(`[Scan] Retrying chunk ${i + 1} (attempt ${attempt + 1})...`);
+              await new Promise(r => setTimeout(r, 3000));
+            }
+            rawResult = await callTextAI(
+              provider,
+              apiKey,
+              SCAN_SYSTEM_PROMPT,
+              `Here is ${sourceType} text to analyze for chapters/sections${chunkLabel}:\n\n${chunks[i]}`
+            );
+
+            let jsonStr = rawResult;
+            jsonStr = jsonStr.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+            const firstBrace = jsonStr.indexOf("{");
+            const firstBracket = jsonStr.indexOf("[");
+            const start = Math.min(
+              firstBrace !== -1 ? firstBrace : Infinity,
+              firstBracket !== -1 ? firstBracket : Infinity
+            );
+            if (start !== Infinity) {
+              const lastBrace = jsonStr.lastIndexOf("}");
+              const lastBracket = jsonStr.lastIndexOf("]");
+              const end = Math.max(lastBrace, lastBracket);
+              jsonStr = jsonStr.substring(start, end + 1);
+            }
+            const parsedJson = JSON.parse(jsonStr);
+            const chunkChapters = parsedJson.chapters || (Array.isArray(parsedJson) ? parsedJson : [parsedJson]);
+            console.log(`[Scan] Chunk ${i + 1}/${chunks.length}: found ${chunkChapters.length} chapters`);
+            allChapters = allChapters.concat(chunkChapters);
+            success = true;
+          } catch (e: any) {
+            console.error(`[Scan] Chunk ${i + 1}/${chunks.length} attempt ${attempt + 1} failed:`, e.message);
+            if (rawResult) console.error(`[Scan] Raw response (first 500):`, rawResult.substring(0, 500));
           }
-          const parsedJson = JSON.parse(jsonStr);
-          const chunkChapters = parsedJson.chapters || (Array.isArray(parsedJson) ? parsedJson : [parsedJson]);
-          allChapters = allChapters.concat(chunkChapters);
-        } catch (e: any) {
-          console.error(`[Scan] Failed to parse chunk ${i + 1}/${chunks.length}:`, e.message);
-          console.error(`[Scan] Raw AI response (first 300):`, result?.substring(0, 300));
         }
 
         if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 2000));
@@ -953,9 +966,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }));
 
       console.log(`[Scan] Done. Found ${allChapters.length} chapters.`);
+      if (allChapters.length === 0) {
+        return res.status(422).json({ error: `Scan completed but found 0 chapters across ${chunks.length} chunk(s). The AI may be overloaded — try again in a moment.` });
+      }
       return res.json({ chapters: allChapters });
     } catch (err: any) {
-      console.error("[Scan] Top-level error:", err);
+      console.error("[Scan] Top-level error:", err.message, err.stack?.substring(0, 300));
       return res.status(422).json({ error: err.message });
     }
   });
