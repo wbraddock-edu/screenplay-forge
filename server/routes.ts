@@ -600,8 +600,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const body = req.body || {};
     let provider = body.provider || "google";
     let apiKey = body.apiKey || "";
-    const PLATFORM_KEY = process.env.GOOGLE_API_KEY || "";
 
+    // If no key in request body, check user's saved key
+    if (!apiKey && req.userId) {
+      try {
+        const user = sqlite.prepare("SELECT api_provider, api_key FROM users WHERE id = ?").get(req.userId) as any;
+        if (user?.api_key) {
+          apiKey = user.api_key;
+          provider = user.api_provider || provider;
+        }
+      } catch {}
+    }
+
+    // Final fallback: platform key
+    const PLATFORM_KEY = process.env.GOOGLE_API_KEY || "";
     if (!apiKey && PLATFORM_KEY) {
       apiKey = PLATFORM_KEY;
       provider = "google";
@@ -896,7 +908,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
 
-      console.log(`Scanning ${text.length} chars in ${chunks.length} chunk(s) for chapters`);
+      console.log(`[Scan] ${text.length} chars, ${chunks.length} chunk(s), provider=${provider}, hasKey=${!!apiKey}, keyPrefix=${apiKey?.substring(0,8)}...`);
 
       let allChapters: DetectedChapter[] = [];
       for (let i = 0; i < chunks.length; i++) {
@@ -926,8 +938,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           const parsedJson = JSON.parse(jsonStr);
           const chunkChapters = parsedJson.chapters || (Array.isArray(parsedJson) ? parsedJson : [parsedJson]);
           allChapters = allChapters.concat(chunkChapters);
-        } catch (e) {
-          console.error(`Failed to parse chunk ${i + 1}/${chunks.length}.`);
+        } catch (e: any) {
+          console.error(`[Scan] Failed to parse chunk ${i + 1}/${chunks.length}:`, e.message);
+          console.error(`[Scan] Raw AI response (first 300):`, result?.substring(0, 300));
         }
 
         if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 2000));
@@ -939,9 +952,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         number: idx + 1,
       }));
 
+      console.log(`[Scan] Done. Found ${allChapters.length} chapters.`);
       return res.json({ chapters: allChapters });
     } catch (err: any) {
-      console.error("Scan error:", err);
+      console.error("[Scan] Top-level error:", err);
       return res.status(422).json({ error: err.message });
     }
   });
