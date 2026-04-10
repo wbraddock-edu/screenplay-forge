@@ -754,7 +754,7 @@ export default function Home() {
               </div>
               <div>
                 <Label className="text-gray-300">API Key</Label>
-                <Input className="bg-[#1a1b26] border-gray-700 text-white" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={PROVIDERS.find((p) => p.id === provider)?.keyPlaceholder || "Leave blank for trial"} />
+                <Input className="bg-[#1a1b26] border-gray-700 text-white" type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={PROVIDERS.find((p) => p.id === provider)?.keyPlaceholder || "Leave blank for trial"} autoComplete="off" />
                 <p className="text-xs text-gray-500 mt-1">Your key is sent directly to the provider. It is never stored.</p>
               </div>
             </CardContent>
@@ -976,7 +976,7 @@ export default function Home() {
                   </div>
                   <div>
                     <Label className="text-gray-300">API Key</Label>
-                    <Input className="bg-[#1a1b26] border-gray-700 text-white" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={PROVIDERS.find((p) => p.id === provider)?.keyPlaceholder || "Leave blank for trial"} data-testid="input-api-key" />
+                    <Input className="bg-[#1a1b26] border-gray-700 text-white" type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={PROVIDERS.find((p) => p.id === provider)?.keyPlaceholder || "Leave blank for trial"} autoComplete="off" data-testid="input-api-key" />
                     <p className="text-xs text-gray-500 mt-1">Your key is sent directly to the provider. It is never stored.</p>
                   </div>
                   <Separator className="bg-gray-800" />
