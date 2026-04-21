@@ -34,6 +34,62 @@ declare module "express" {
   }
 }
 
+// ── Persistent Auth (Forge standard) ──
+
+const AUTH_COOKIE_NAME = "forge_session";
+const AUTH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  if (!header) return {};
+  const out: Record<string, string> = {};
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const k = part.slice(0, eq).trim();
+    const v = part.slice(eq + 1).trim();
+    if (k) out[k] = decodeURIComponent(v);
+  }
+  return out;
+}
+
+function extractAuthToken(req: Request): string | null {
+  const auth = (req.headers["authorization"] as string) || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (bearer) return bearer;
+  const cookies = parseCookies(req.headers["cookie"] as string | undefined);
+  return cookies[AUTH_COOKIE_NAME] || null;
+}
+
+function buildSessionCookie(token: string, clear = false): string {
+  const isProd = process.env.NODE_ENV === "production";
+  const forceCrossSite = process.env.AUTH_COOKIE_SAMESITE_NONE === "1";
+  const sameSite = forceCrossSite ? "None" : "Lax";
+  const secure = isProd || forceCrossSite;
+  const parts = [
+    `${AUTH_COOKIE_NAME}=${clear ? "" : encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${sameSite}`,
+  ];
+  if (secure) parts.push("Secure");
+  if (clear) {
+    parts.push("Max-Age=0");
+    parts.push("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+  } else {
+    parts.push(`Max-Age=${Math.floor(AUTH_COOKIE_MAX_AGE_MS / 1000)}`);
+    parts.push(`Expires=${new Date(Date.now() + AUTH_COOKIE_MAX_AGE_MS).toUTCString()}`);
+  }
+  return parts.join("; ");
+}
+
+function setAuthCookie(res: Response, token: string) {
+  res.setHeader("Set-Cookie", buildSessionCookie(token, false));
+}
+
+function clearAuthCookie(res: Response) {
+  res.setHeader("Set-Cookie", buildSessionCookie("", true));
+}
+
 // ── AI Provider Abstraction ──
 
 async function callTextAI(
@@ -463,9 +519,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       const token = crypto.randomUUID();
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + AUTH_COOKIE_MAX_AGE_MS).toISOString();
       db.insert(authSessions).values({ userId: user.id, token, expiresAt, createdAt: now }).run();
 
+      setAuthCookie(res, token);
       return res.json({ token, user: { id: user.id, email: user.email, displayName: user.displayName } });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -492,9 +549,10 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const now = new Date().toISOString();
       const token = crypto.randomUUID();
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + AUTH_COOKIE_MAX_AGE_MS).toISOString();
       db.insert(authSessions).values({ userId: user.id, token, expiresAt, createdAt: now }).run();
 
+      setAuthCookie(res, token);
       return res.json({ token, user: { id: user.id, email: user.email, displayName: user.displayName } });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -502,24 +560,29 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.post("/api/auth/logout", (req: Request, res: Response) => {
-    const token = (req.headers["authorization"] as string)?.replace("Bearer ", "");
+    const token = extractAuthToken(req);
     if (token) {
-      db.delete(authSessions).where(eq(authSessions.token, token)).run();
+      try { db.delete(authSessions).where(eq(authSessions.token, token)).run(); } catch {}
     }
+    clearAuthCookie(res);
     return res.json({ ok: true });
   });
 
   app.get("/api/auth/me", (req: Request, res: Response) => {
-    const token = (req.headers["authorization"] as string)?.replace("Bearer ", "");
+    const token = extractAuthToken(req);
     if (!token) return res.status(401).json({ error: "Not authenticated" });
 
     const session = db.select().from(authSessions).where(eq(authSessions.token, token)).get();
     if (!session || new Date(session.expiresAt) < new Date()) {
+      if (session) { try { db.delete(authSessions).where(eq(authSessions.token, token)).run(); } catch {} }
+      clearAuthCookie(res);
       return res.status(401).json({ error: "Session expired" });
     }
     const user = db.select().from(users).where(eq(users.id, session.userId)).get();
     if (!user) return res.status(401).json({ error: "User not found" });
 
+    // Refresh cookie (rolling expiry) so active users stay signed in
+    setAuthCookie(res, token);
     return res.json({ id: user.id, email: user.email, displayName: user.displayName });
   });
 
@@ -559,7 +622,23 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       db.update(users).set({ passwordHash }).where(eq(users.id, reset.userId)).run();
       db.delete(passwordResets).where(eq(passwordResets.token, token)).run();
 
-      return res.json({ ok: true, message: "Password has been reset. You can now sign in." });
+      // Invalidate any existing sessions for this user (security: password changed)
+      try { db.delete(authSessions).where(eq(authSessions.userId, reset.userId)).run(); } catch {}
+
+      // Issue a fresh session + cookie so the user is signed in after reset
+      const user = db.select().from(users).where(eq(users.id, reset.userId)).get();
+      const now = new Date().toISOString();
+      const sessionToken = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + AUTH_COOKIE_MAX_AGE_MS).toISOString();
+      db.insert(authSessions).values({ userId: reset.userId, token: sessionToken, expiresAt, createdAt: now }).run();
+      setAuthCookie(res, sessionToken);
+
+      return res.json({
+        ok: true,
+        message: "Password has been reset. You are now signed in.",
+        token: sessionToken,
+        user: user ? { id: user.id, email: user.email, displayName: user.displayName } : null,
+      });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
@@ -570,7 +649,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     if (req.path.startsWith("/auth/") || req.path.startsWith("/auth") || req.path === "/stripe/webhook") {
       return next();
     }
-    const token = (req.headers["authorization"] as string)?.replace("Bearer ", "");
+    const token = extractAuthToken(req);
     if (!token) return res.status(401).json({ error: "Authentication required" });
 
     const session = db.select().from(authSessions).where(eq(authSessions.token, token)).get();

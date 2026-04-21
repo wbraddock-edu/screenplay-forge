@@ -133,9 +133,10 @@ export default function Home() {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Auth Check ──
+  // Always call /api/auth/me on mount so an HttpOnly session cookie can
+  // restore the signed-in user after a hard refresh, even when the
+  // in-memory bearer token is gone. Bearer compatibility is preserved.
   useEffect(() => {
-    const token = getSessionToken();
-    if (!token) { setAuthLoading(false); return; }
     apiRequest("GET", "/api/auth/me")
       .then((r) => r.json())
       .then((data) => { setCurrentUser(data); setIsAuthenticated(true); })
