@@ -19,6 +19,7 @@ import {
   FolderOpen, LogOut, Settings, ChevronDown, User, CheckCircle2,
   Film, BookOpen, Video, Users, MapPin, Box, Clapperboard,
   Volume2, Crown, Clock, CreditCard, KeyRound, AlertCircle, Link2,
+  RefreshCw,
   type LucideIcon,
 } from "lucide-react";
 import type { DetectedChapter, ConvertedChapter, ScreenplayElementType } from "@shared/schema";
@@ -593,6 +594,48 @@ export default function Home() {
       description: `${processed} of ${unconverted.length} chapters processed${cancelled ? " before cancel" : ""}.`,
     });
   }, [detectedChapters, convertedChapters, text, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast, isConverting, convertingAll]);
+
+  // ── Reconvert (retry a single chapter, replacing any existing conversion) ──
+  const handleReconvert = useCallback(async (chapterNumber: number) => {
+    if (isConverting || convertingAll) return;
+    const chapter = detectedChapters.find(c => c.number === chapterNumber);
+    if (!chapter) return;
+    // Clear the existing slot so the UI immediately reflects an in-flight reconvert
+    // and so a failed retry doesn't leave the previous (rejected) screenplay visible.
+    setConvertedChapters(prev => {
+      if (!(chapterNumber in prev)) return prev;
+      const next = { ...prev };
+      delete next[chapterNumber];
+      return next;
+    });
+    const controller = new AbortController();
+    conversionAbortRef.current = controller;
+    setIsConverting(true);
+    setConvertingChapterNumber(chapterNumber);
+    try {
+      const r = await apiRequest("POST", "/api/convert", {
+        text, chapterNumber, chapterTitle: chapter.title,
+        provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
+      }, { signal: controller.signal, timeoutMs: PER_CHAPTER_TIMEOUT_MS });
+      const data = await r.json();
+      const raw = data.converted || data;
+      const converted = { ...raw, chapterNumber, chapterTitle: chapter.title || raw.chapterTitle || "" };
+      setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
+      setSelectedChapter(chapterNumber);
+      toast({ title: "Reconverted", description: `Chapter ${chapterNumber}: ${chapter.title}` });
+    } catch (err: any) {
+      const isAbort = err?.name === "AbortError" || err?.name === "TimeoutError";
+      toast({
+        title: isAbort ? "Reconvert cancelled" : "Reconvert failed",
+        description: isAbort ? (err?.message || "Request was aborted") : (err?.message || "Unknown error"),
+        variant: "destructive",
+      });
+    } finally {
+      setIsConverting(false);
+      setConvertingChapterNumber(null);
+      if (conversionAbortRef.current === controller) conversionAbortRef.current = null;
+    }
+  }, [text, detectedChapters, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast, isConverting, convertingAll]);
 
   // ── Export ──
   const handleExport = useCallback(async (format: "fountain" | "pdf" | "docx") => {
@@ -1286,19 +1329,35 @@ export default function Home() {
                         <span>{ch.wordCount.toLocaleString()} words</span>
                         <span>~{ch.estimatedPages} pages</span>
                       </div>
-                      <Button size="sm" className={isConverted ? "bg-gray-700 hover:bg-gray-600 text-white w-full" : "bg-[#00d4aa] hover:bg-[#00b894] text-black w-full"} onClick={() => {
-                        if (isConverted) { setSelectedChapter(ch.number); setStep("viewer"); }
-                        else handleConvert(ch.number);
-                      }} disabled={(isConverting || convertingAll) && !isConverted} data-testid={`button-convert-${ch.number}`}>
-                        {convertingChapterNumber === ch.number && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
-                        {isConverted
-                          ? (<>View Screenplay <ChevronRight className="w-4 h-4 ml-1" /></>)
-                          : convertingChapterNumber === ch.number
-                            ? (<>Converting… {convertElapsed}s</>)
-                            : (isConverting || convertingAll)
-                              ? (<>Waiting…</>)
-                              : (<>Convert to Screenplay <Sparkles className="w-4 h-4 ml-1" /></>)}
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" className={isConverted ? "bg-gray-700 hover:bg-gray-600 text-white flex-1" : "bg-[#00d4aa] hover:bg-[#00b894] text-black w-full"} onClick={() => {
+                          if (isConverted) { setSelectedChapter(ch.number); setStep("viewer"); }
+                          else handleConvert(ch.number);
+                        }} disabled={(isConverting || convertingAll) && !isConverted} data-testid={`button-convert-${ch.number}`}>
+                          {convertingChapterNumber === ch.number && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                          {isConverted
+                            ? (<>View Screenplay <ChevronRight className="w-4 h-4 ml-1" /></>)
+                            : convertingChapterNumber === ch.number
+                              ? (<>Converting… {convertElapsed}s</>)
+                              : (isConverting || convertingAll)
+                                ? (<>Waiting…</>)
+                                : (<>Convert to Screenplay <Sparkles className="w-4 h-4 ml-1" /></>)}
+                        </Button>
+                        {isConverted && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 min-h-[44px] min-w-[44px] px-3"
+                            onClick={() => handleReconvert(ch.number)}
+                            disabled={isConverting || convertingAll}
+                            title="Reconvert this chapter"
+                            aria-label={`Reconvert chapter ${ch.number}`}
+                            data-testid={`button-reconvert-${ch.number}`}
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -1399,7 +1458,23 @@ export default function Home() {
                               {convertedChapters[selectedChapter].sceneCount} scenes · {convertedChapters[selectedChapter].pageCount} pages · {convertedChapters[selectedChapter].elements.length} elements
                             </p>
                           </div>
-                          <p className="text-xs text-gray-500">Click any element to edit</p>
+                          <div className="flex items-center gap-3">
+                            <p className="text-xs text-gray-500 hidden md:block">Click any element to edit</p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 min-h-[44px]"
+                              onClick={() => handleReconvert(selectedChapter!)}
+                              disabled={isConverting || convertingAll || !selectedChapter}
+                              title="Reconvert this chapter"
+                              data-testid="button-reconvert-viewer"
+                            >
+                              {convertingChapterNumber === selectedChapter
+                                ? <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                                : <RefreshCw className="w-4 h-4 mr-1" />}
+                              Reconvert
+                            </Button>
+                          </div>
                         </div>
                       </CardHeader>
                       <CardContent className="p-8" data-testid="screenplay-viewer">
