@@ -64,6 +64,33 @@ const FAQ_ITEMS = [
   { q: "Where does Screenplay Forge fit in the pipeline?", a: "Between Story Forge (finished narratives) and Manuscript Forge (production readiness scoring)." },
 ];
 
+// Normalize chapter titles to a uniform "Chapter N: <Title>" format.
+// Manuscripts often mix conventions ("Chapter 1: The Pool", "Chapter 3 - The
+// Games Begin", "The Interview Room", "Chapter 2 (Continued from previous
+// part)"). The scanner returns whatever it finds verbatim, so we normalize
+// here using the detected `number` as the source of truth for ordering.
+function normalizeChapterTitle(rawTitle: string, number: number): string {
+  const original = (rawTitle || "").trim();
+  if (!original) return `Chapter ${number}`;
+  // Strip a leading "Chapter N" / "Ch. N" / "CHAPTER N" with optional separator,
+  // then unwrap any surrounding parentheses, leaving only the descriptive title.
+  // Matches: "Chapter 1: The Pool", "Chapter 3 - The Games Begin",
+  // "Chapter 2 (Continued from previous part)", "CHAPTER 5", "Ch. 7 — Foo".
+  const stripped = original
+    .replace(/^(chapter|ch\.?)\s*\d+\s*[:\-–—]?\s*/i, "")
+    .replace(/^\((.*)\)$/, "$1")
+    .trim();
+  if (!stripped) return `Chapter ${number}`;
+  return `Chapter ${number}: ${stripped}`;
+}
+
+function normalizeDetectedChapters(chapters: DetectedChapter[]): DetectedChapter[] {
+  return chapters.map((ch) => ({
+    ...ch,
+    title: normalizeChapterTitle(ch.title, ch.number),
+  }));
+}
+
 export default function Home() {
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
@@ -235,7 +262,7 @@ export default function Home() {
       setText(state.text || "");
       setProvider(state.provider || "google");
       setApiKey(state.apiKey || "");
-      setDetectedChapters(state.detectedChapters || []);
+      setDetectedChapters(normalizeDetectedChapters(state.detectedChapters || []));
       setConvertedChapters(state.convertedChapters || {});
       setGenre(state.genre || "drama");
       setPacing(state.pacing || "standard");
@@ -433,7 +460,7 @@ export default function Home() {
     try {
       const r = await apiRequest("POST", "/api/scan", { text, provider, apiKey });
       const data = await r.json();
-      const chapters = data.chapters || [];
+      const chapters = normalizeDetectedChapters(data.chapters || []);
       setDetectedChapters(chapters);
       setStep("dashboard");
       toast({ title: "Scan complete!", description: `Found ${chapters.length} chapters.` });
