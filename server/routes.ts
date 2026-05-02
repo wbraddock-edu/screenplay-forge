@@ -252,6 +252,17 @@ Return a JSON object with:
 
 Element types: "scene_heading", "action", "character", "parenthetical", "dialogue", "transition", "voice_over"`;
 
+// Strip any leading "Chapter N" / "Ch. N" / "CHAPTER N" prefix from a stored
+// chapterTitle so callers can compose "Chapter N: <descriptive>" without
+// risking a doubled prefix. Mirrors stripChapterPrefix on the client.
+function stripChapterPrefix(rawTitle: string | undefined | null): string {
+  return (rawTitle || "")
+    .trim()
+    .replace(/^(chapter|ch\.?)\s*\d+\s*[:\-–—]?\s*/i, "")
+    .replace(/^\((.*)\)$/, "$1")
+    .trim();
+}
+
 // ── DOCX Generation (Screenplay Format) ──
 
 function buildScreenplayDocx(
@@ -292,7 +303,7 @@ function buildScreenplayDocx(
     allChildren.push(
       new Paragraph({
         children: [
-          new TextRun({ text: `--- CHAPTER ${chapter.chapterNumber}: ${chapter.chapterTitle.toUpperCase()} ---`, bold: true, size: 24, font: "Courier New" }),
+          new TextRun({ text: `--- CHAPTER ${chapter.chapterNumber}: ${stripChapterPrefix(chapter.chapterTitle).toUpperCase() || "UNTITLED"} ---`, bold: true, size: 24, font: "Courier New" }),
         ],
         spacing: { before: 600, after: 400 },
         alignment: AlignmentType.CENTER,
@@ -429,7 +440,7 @@ function buildFountainText(
 
   for (const chapter of chapters) {
     // Chapter divider as a section heading
-    lines.push(`# Chapter ${chapter.chapterNumber}: ${chapter.chapterTitle}`);
+    lines.push(`# Chapter ${chapter.chapterNumber}: ${stripChapterPrefix(chapter.chapterTitle) || "Untitled"}`);
     lines.push("");
 
     for (const el of chapter.elements) {

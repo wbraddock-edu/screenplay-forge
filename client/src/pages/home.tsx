@@ -70,17 +70,29 @@ const FAQ_ITEMS = [
 // Games Begin", "The Interview Room", "Chapter 2 (Continued from previous
 // part)"). The scanner returns whatever it finds verbatim, so we normalize
 // here using the detected `number` as the source of truth for ordering.
-function normalizeChapterTitle(rawTitle: string, number: number): string {
-  const original = (rawTitle || "").trim();
-  if (!original) return `Chapter ${number}`;
-  // Strip a leading "Chapter N" / "Ch. N" / "CHAPTER N" with optional separator,
-  // then unwrap any surrounding parentheses, leaving only the descriptive title.
-  // Matches: "Chapter 1: The Pool", "Chapter 3 - The Games Begin",
-  // "Chapter 2 (Continued from previous part)", "CHAPTER 5", "Ch. 7 — Foo".
-  const stripped = original
+// Strip any leading "Chapter N" / "Ch. N" / "CHAPTER N" prefix from a raw title,
+// then unwrap surrounding parentheses, leaving only the descriptive part.
+// Matches: "Chapter 1: The Pool", "Chapter 3 - The Games Begin",
+// "Chapter 2 (Continued from previous part)", "CHAPTER 5", "Ch. 7 — Foo".
+function stripChapterPrefix(rawTitle: string): string {
+  return (rawTitle || "")
+    .trim()
     .replace(/^(chapter|ch\.?)\s*\d+\s*[:\-–—]?\s*/i, "")
     .replace(/^\((.*)\)$/, "$1")
     .trim();
+}
+
+function normalizeChapterTitle(rawTitle: string, number: number): string {
+  const stripped = stripChapterPrefix(rawTitle);
+  if (!stripped) return `Chapter ${number}`;
+  return `Chapter ${number}: ${stripped}`;
+}
+
+// Build the viewer header title defensively: handles both new conversions where
+// chapterTitle already contains the "Chapter N:" prefix and older saved state
+// where chapterTitle is descriptive-only. Always renders "Chapter N: <descriptive>".
+function formatChapterHeading(number: number, chapterTitle: string): string {
+  const stripped = stripChapterPrefix(chapterTitle);
   if (!stripped) return `Chapter ${number}`;
   return `Chapter ${number}: ${stripped}`;
 }
@@ -529,7 +541,7 @@ export default function Home() {
       setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
       setSelectedChapter(chapterNumber);
       setStep("viewer");
-      toast({ title: "Conversion complete!", description: `Chapter ${chapterNumber}: ${chapter.title}` });
+      toast({ title: "Conversion complete", description: chapter.title });
     } catch (err: any) {
       const isAbort = err?.name === "AbortError" || err?.name === "TimeoutError";
       toast({
@@ -622,7 +634,7 @@ export default function Home() {
       const converted = { ...raw, chapterNumber, chapterTitle: chapter.title || raw.chapterTitle || "" };
       setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
       setSelectedChapter(chapterNumber);
-      toast({ title: "Reconverted", description: `Chapter ${chapterNumber}: ${chapter.title}` });
+      toast({ title: "Reconverted", description: chapter.title });
     } catch (err: any) {
       const isAbort = err?.name === "AbortError" || err?.name === "TimeoutError";
       toast({
@@ -1452,7 +1464,7 @@ export default function Home() {
                         <div className="flex items-center justify-between">
                           <div>
                             <CardTitle className="text-white font-['Courier_Prime','Courier_New',Courier,monospace]">
-                              Chapter {convertedChapters[selectedChapter].chapterNumber}: {convertedChapters[selectedChapter].chapterTitle}
+                              {formatChapterHeading(convertedChapters[selectedChapter].chapterNumber, convertedChapters[selectedChapter].chapterTitle)}
                             </CardTitle>
                             <p className="text-xs text-gray-500 mt-1">
                               {convertedChapters[selectedChapter].sceneCount} scenes · {convertedChapters[selectedChapter].pageCount} pages · {convertedChapters[selectedChapter].elements.length} elements
