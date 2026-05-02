@@ -1071,6 +1071,45 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  // ── Chapter slicing ──────────────────────────────────────────────────────────
+  // Find every chapter heading in the manuscript text and return ranges. Uses
+  // the same heading patterns the scanner's TIER 1 prompt recognizes. Returns
+  // an array of { number, startOffset, endOffset } sorted by startOffset, where
+  // number is the sequential 1-based chapter index in the manuscript (NOT the
+  // value the author wrote — we match the scanner's sequential numbering).
+  function findChapterRanges(text: string): { number: number; startOffset: number; endOffset: number }[] {
+    // Match common chapter markers at the start of a line. The patterns are
+    // intentionally tolerant: "Chapter 5", "CHAPTER FIVE", "Ch. 5", "Ch 5",
+    // "5.", roman numerals, or PROLOGUE/EPILOGUE/PART/BOOK markers.
+    const HEADING = /^[ \t]*(?:chapter|ch\.?|part|book|prologue|epilogue)\b[^\n]{0,120}$|^[ \t]*(?:[ivxlcdm]{1,8})\.?[ \t]*$|^[ \t]*\d{1,3}\.[ \t]*$/gim;
+    const positions: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = HEADING.exec(text)) !== null) {
+      positions.push(m.index);
+      if (HEADING.lastIndex === m.index) HEADING.lastIndex++; // safety against zero-width
+    }
+    if (positions.length === 0) return [];
+    const ranges: { number: number; startOffset: number; endOffset: number }[] = [];
+    for (let i = 0; i < positions.length; i++) {
+      ranges.push({
+        number: i + 1,
+        startOffset: positions[i],
+        endOffset: i + 1 < positions.length ? positions[i + 1] : text.length,
+      });
+    }
+    return ranges;
+  }
+
+  // Return only the prose for the requested chapter, or null if the manuscript
+  // has no detectable headings (caller falls back to the full text in that case).
+  function sliceChapterText(text: string, chapterNumber: number): string | null {
+    const ranges = findChapterRanges(text);
+    if (ranges.length === 0) return null;
+    const r = ranges.find(x => x.number === chapterNumber);
+    if (!r) return null;
+    return text.substring(r.startOffset, r.endOffset).trim();
+  }
+
   // ── Step 2: Convert chapter to screenplay ──
   app.post("/api/convert", async (req: Request, res: Response) => {
     if (!requireActiveSubscription(req, res)) return;
@@ -1082,6 +1121,19 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       const { text, chapterNumber, chapterTitle, genre, pacing, dialogueStyle, sceneDetail, characterBibles } = parsed.data;
       const { provider, apiKey } = resolveApiKey(req);
+
+      // ── Slice out ONLY the requested chapter's text ──────────────────────
+      // Previously we sent the entire manuscript with a header line saying which
+      // chapter to convert. The AI would frequently ignore the header and convert
+      // the first chapter it saw (e.g. requesting Ch.15 returned Ch.1's content).
+      // We now locate the requested chapter via heading regex and slice the text
+      // to that chapter's range before sending. Falls back to the full text only
+      // if no headings can be found at all (rare; manuscript has no chapter
+      // markers and was scanned via the Tier 2 fallback path).
+      const chapterText = sliceChapterText(text, chapterNumber);
+      const sourceText = chapterText ?? text;
+      const sliced = chapterText !== null;
+      console.log(`[Convert] req ch=${chapterNumber} title="${chapterTitle}" sliced=${sliced} sourceLen=${sourceText.length}/${text.length}`);
 
       // Build user prompt with settings context
       let settingsContext = '';
@@ -1096,13 +1148,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
 
-      const userPrompt = `${settingsContext ? `Conversion Settings:\n${settingsContext}\n` : ''}Convert the following prose chapter into screenplay format.
+      // The user prompt now contains ONLY this chapter's prose. The header
+      // tells the model the identity, but identity is also enforced server-side
+      // by overwriting chapterNumber/chapterTitle on the response (see below).
+      const userPrompt = `${settingsContext ? `Conversion Settings:\n${settingsContext}\n` : ''}Convert the following prose chapter into screenplay format. Convert ONLY this chapter — do not look beyond it, do not invent content from other chapters.
 
 Chapter ${chapterNumber}: ${chapterTitle || 'Untitled'}
 
 ---
 
-${text}`;
+${sourceText}`;
 
       const result = await callTextAI(
         provider,
@@ -1125,6 +1180,14 @@ ${text}`;
         console.error("Failed to parse convert response. Raw (first 500 chars):", result.substring(0, 500));
         return res.status(422).json({ error: "Failed to parse AI response. Please try again." });
       }
+
+      // ── Defensive identity overwrite ────────────────────────────────────
+      // Never trust the model's claimed chapterNumber/chapterTitle. The slot
+      // identity is whatever the client requested. This protects against the
+      // model echoing a wrong header (e.g. "Chapter 1: The Pool") into the
+      // payload for a Ch.15 conversion.
+      converted.chapterNumber = chapterNumber;
+      converted.chapterTitle = chapterTitle || converted.chapterTitle || '';
 
       return res.json({ converted });
     } catch (err: any) {

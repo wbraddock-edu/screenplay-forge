@@ -521,7 +521,10 @@ export default function Home() {
         provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
       }, { signal: controller.signal, timeoutMs: PER_CHAPTER_TIMEOUT_MS });
       const data = await r.json();
-      const converted = data.converted || data;
+      const raw = data.converted || data;
+      // Defensive identity overwrite: server is authoritative on slot identity,
+      // but if a stale server is deployed we still pin the requested number/title.
+      const converted = { ...raw, chapterNumber, chapterTitle: chapter.title || raw.chapterTitle || "" };
       setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
       setSelectedChapter(chapterNumber);
       setStep("viewer");
@@ -563,7 +566,8 @@ export default function Home() {
           provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
         }, { signal: controller.signal, timeoutMs: PER_CHAPTER_TIMEOUT_MS });
         const data = await r.json();
-        const converted = data.converted || data;
+        const raw = data.converted || data;
+        const converted = { ...raw, chapterNumber: ch.number, chapterTitle: ch.title || raw.chapterTitle || "" };
         setConvertedChapters(prev => ({ ...prev, [ch.number]: converted }));
         processed++;
       } catch (err: any) {
