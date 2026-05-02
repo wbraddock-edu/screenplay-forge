@@ -177,23 +177,39 @@ async function callTextAI(
 
 // ── Prompt Templates ──
 
-const SCAN_SYSTEM_PROMPT = `You are an expert screenplay adapter and literary analyst. Your job is to analyze prose manuscripts and identify their natural chapter or section divisions so they can be converted into screenplay format one chapter at a time.
+const SCAN_SYSTEM_PROMPT = `You are an expert literary analyst. Your job is to identify the chapter divisions an author already wrote into a prose manuscript so it can be converted to screenplay format one chapter at a time.
 
-For each chapter or natural section you detect, provide:
-- number: sequential chapter number (integer starting at 1)
-- title: the chapter title if one exists, or a descriptive title based on content (e.g. "The Arrival", "Chapter 3 - Betrayal")
-- wordCount: approximate word count for this chapter/section
-- briefSummary: 1-2 sentence summary of what happens in this chapter
-- estimatedPages: estimated screenplay pages (roughly 1 page per 250 words of prose, but adjust based on dialogue density — dialogue-heavy sections convert to more pages)
+DETECTION PRECEDENCE — follow this order strictly. Do not mix tiers.
 
-Look for chapters indicated by:
-- Explicit "Chapter X" headings
-- Numbered sections
-- Named parts or sections
-- Large breaks with scene/location changes
-- Natural narrative divisions (time jumps, POV shifts)
+TIER 1: EXPLICIT AUTHOR HEADINGS (use this whenever any are present)
+If the manuscript contains ANY of these markers, treat them as the ONLY chapter boundaries and ignore all other signals:
+- "Chapter 1", "Chapter 2", ... (any case, with or without colon, dash, em dash)
+- "CHAPTER ONE", "CHAPTER TWO", ... (spelled-out forms)
+- "Ch. 1", "Ch.1", "CH 1"
+- Roman numerals on their own line: "I.", "II.", "III.", "IV."
+- A bare integer or roman numeral on its own line followed by a blank line
+- Named-part headings like "PART ONE", "BOOK TWO", "PROLOGUE", "EPILOGUE", "INTERLUDE"
+- A short title line (under ~10 words) on its own line, separated above and below by blank lines, that clearly announces a new chapter (common in modern fiction where the author uses titles instead of numbers)
 
-If the text has no clear chapter divisions, create logical sections of roughly 2000-5000 words each based on narrative beats.
+When TIER 1 markers exist, your output MUST contain exactly one entry per author-defined chapter. DO NOT split a single authored chapter into multiple entries even if it is long, contains scene changes, location jumps, time jumps, or POV shifts. Those are intra-chapter beats, not chapter boundaries.
+
+TIER 2: FALLBACK (use ONLY if zero TIER 1 markers exist anywhere in the manuscript)
+If and only if the manuscript has no explicit chapter markers, create logical sections of roughly 3000-6000 words each at the strongest available narrative break (major time jump, location change, or POV shift). Aim for fewer, larger sections rather than many small ones.
+
+NUMBERING
+- number: sequential integer starting at 1, in the order chapters appear.
+- This is the ONLY source of truth for ordering. The author's own number (e.g. "Chapter 9") MAY differ from your sequential number if the manuscript has gaps, prologues, or renumbered sections — always use sequential ordering.
+
+TITLE
+- title: if the author wrote a title ("The Pool", "First Contact", "Twenty-Four Hours"), return ONLY the descriptive part — do NOT include "Chapter N" or "Ch. N" prefixes, do NOT include separators like ":" or "-". The frontend adds the "Chapter N:" prefix.
+- If the author only wrote "Chapter 5" with no descriptive title, return an empty string "" for title.
+- If you are inventing a title under TIER 2, give a short 2-5 word descriptive label and return only that.
+- NEVER include the word "Continued" or "Part 2" in a title — that signals you are over-splitting an authored chapter, which is forbidden under TIER 1.
+
+OTHER FIELDS
+- wordCount: approximate word count for this chapter.
+- briefSummary: 1-2 sentence summary of what happens.
+- estimatedPages: roughly 1 page per 250 words, adjusted upward for dialogue-heavy chapters.
 
 Return a JSON object with a "chapters" array:
 {"chapters": [...]}`;
