@@ -99,6 +99,7 @@ export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [isScanning, setIsScanning] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
+  const [convertingChapterNumber, setConvertingChapterNumber] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [convertingAll, setConvertingAll] = useState(false);
   const [convertAllProgress, setConvertAllProgress] = useState(0);
@@ -450,9 +451,12 @@ export default function Home() {
 
   // ── Convert ──
   const handleConvert = useCallback(async (chapterNumber: number) => {
+    // Re-entrancy guard: don't fire a second request while one is in flight.
+    if (isConverting || convertingAll) return;
     const chapter = detectedChapters.find(c => c.number === chapterNumber);
     if (!chapter) return;
     setIsConverting(true);
+    setConvertingChapterNumber(chapterNumber);
     try {
       const r = await apiRequest("POST", "/api/convert", {
         text, chapterNumber, chapterTitle: chapter.title,
@@ -465,9 +469,12 @@ export default function Home() {
       setStep("viewer");
       toast({ title: "Conversion complete!", description: `Chapter ${chapterNumber}: ${chapter.title}` });
     } catch (err: any) {
-      toast({ title: "Conversion failed", description: err.message, variant: "destructive" });
-    } finally { setIsConverting(false); }
-  }, [text, detectedChapters, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast]);
+      toast({ title: "Conversion failed", description: err?.message || "Unknown error", variant: "destructive" });
+    } finally {
+      setIsConverting(false);
+      setConvertingChapterNumber(null);
+    }
+  }, [text, detectedChapters, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast, isConverting, convertingAll]);
 
   const handleConvertAll = useCallback(async () => {
     const unconverted = detectedChapters.filter(c => !convertedChapters[c.number]);
@@ -1238,21 +1245,39 @@ export default function Home() {
                 <p className="text-sm font-semibold text-gray-400 mb-2">Chapters</p>
                 {detectedChapters.map((ch) => {
                   const isConverted = !!convertedChapters[ch.number];
+                  const isThisConverting = isConverting && convertingChapterNumber === ch.number;
+                  const isAnyConverting = isConverting || convertingAll;
+                  const isDisabled = isAnyConverting && !isConverted;
                   return (
                     <button key={ch.number}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${selectedChapter === ch.number ? "bg-[#00d4aa]/20 text-[#00d4aa] border border-[#00d4aa]/30" : isConverted ? "bg-[#12131a] text-gray-300 hover:bg-[#1a1b26] border border-transparent" : "bg-[#12131a] text-gray-500 hover:bg-[#1a1b26] border border-transparent"}`}
+                      type="button"
+                      disabled={isDisabled}
+                      aria-busy={isThisConverting}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors min-h-[44px] ${selectedChapter === ch.number ? "bg-[#00d4aa]/20 text-[#00d4aa] border border-[#00d4aa]/30" : isConverted ? "bg-[#12131a] text-gray-300 hover:bg-[#1a1b26] border border-transparent" : "bg-[#12131a] text-gray-500 hover:bg-[#1a1b26] border border-transparent"} ${isDisabled ? "opacity-60 cursor-not-allowed" : ""}`}
                       onClick={() => {
-                        if (isConverted) setSelectedChapter(ch.number);
-                        else handleConvert(ch.number);
+                        if (isConverted) {
+                          setSelectedChapter(ch.number);
+                        } else if (!isAnyConverting) {
+                          handleConvert(ch.number);
+                        }
                       }}
                       data-testid={`sidebar-chapter-${ch.number}`}
                     >
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-xs text-gray-500">Ch.{ch.number}</span>
                         {isConverted && <CheckCircle2 className="w-3 h-3 text-green-400" />}
+                        {isThisConverting && <Loader2 className="w-3 h-3 text-[#00d4aa] animate-spin" />}
                       </div>
                       <p className="truncate">{ch.title}</p>
-                      {!isConverted && <p className="text-xs text-[#00d4aa]">Click to convert</p>}
+                      {!isConverted && (
+                        isThisConverting ? (
+                          <p className="text-xs text-[#00d4aa]">Converting…</p>
+                        ) : isAnyConverting ? (
+                          <p className="text-xs text-gray-500">Waiting…</p>
+                        ) : (
+                          <p className="text-xs text-[#00d4aa]">Click to convert</p>
+                        )
+                      )}
                     </button>
                   );
                 })}
