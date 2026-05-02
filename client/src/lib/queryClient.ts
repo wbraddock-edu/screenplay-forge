@@ -28,10 +28,16 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+export interface ApiRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
+  options?: ApiRequestOptions,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     ...authHeaders(),
@@ -40,15 +46,30 @@ export async function apiRequest(
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_BASE}${url}`, {
-    method,
-    headers,
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
+  // Compose an internal timeout signal with any caller-supplied signal so
+  // either source can abort the request. No timeout if timeoutMs is omitted.
+  const controller = new AbortController();
+  const timeoutId = options?.timeoutMs
+    ? setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), options.timeoutMs)
+    : null;
+  if (options?.signal) {
+    if (options.signal.aborted) controller.abort(options.signal.reason);
+    else options.signal.addEventListener("abort", () => controller.abort(options.signal!.reason), { once: true });
+  }
 
-  await throwIfResNotOk(res);
-  return res;
+  try {
+    const res = await fetch(`${API_BASE}${url}`, {
+      method,
+      headers,
+      body: data ? JSON.stringify(data) : undefined,
+      credentials: "include",
+      signal: controller.signal,
+    });
+    await throwIfResNotOk(res);
+    return res;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";

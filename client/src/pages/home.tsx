@@ -102,6 +102,8 @@ export default function Home() {
   const [convertingChapterNumber, setConvertingChapterNumber] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [convertingAll, setConvertingAll] = useState(false);
+  // AbortController for in-flight conversion requests so the user can cancel.
+  const conversionAbortRef = useRef<AbortController | null>(null);
   const [convertAllProgress, setConvertAllProgress] = useState(0);
 
   // ── Screenplay Data ──
@@ -450,18 +452,31 @@ export default function Home() {
   }, [autoScanAfterImport, text, handleScan]);
 
   // ── Convert ──
+  // Per-chapter timeout: most chapters complete in 30–60s on Gemini; 120s leaves
+  // headroom for long chapters but kills genuinely hung requests.
+  const PER_CHAPTER_TIMEOUT_MS = 120_000;
+
+  const cancelConversion = useCallback(() => {
+    if (conversionAbortRef.current) {
+      conversionAbortRef.current.abort(new DOMException("User cancelled", "AbortError"));
+      conversionAbortRef.current = null;
+    }
+  }, []);
+
   const handleConvert = useCallback(async (chapterNumber: number) => {
     // Re-entrancy guard: don't fire a second request while one is in flight.
     if (isConverting || convertingAll) return;
     const chapter = detectedChapters.find(c => c.number === chapterNumber);
     if (!chapter) return;
+    const controller = new AbortController();
+    conversionAbortRef.current = controller;
     setIsConverting(true);
     setConvertingChapterNumber(chapterNumber);
     try {
       const r = await apiRequest("POST", "/api/convert", {
         text, chapterNumber, chapterTitle: chapter.title,
         provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
-      });
+      }, { signal: controller.signal, timeoutMs: PER_CHAPTER_TIMEOUT_MS });
       const data = await r.json();
       const converted = data.converted || data;
       setConvertedChapters(prev => ({ ...prev, [chapterNumber]: converted }));
@@ -469,40 +484,68 @@ export default function Home() {
       setStep("viewer");
       toast({ title: "Conversion complete!", description: `Chapter ${chapterNumber}: ${chapter.title}` });
     } catch (err: any) {
-      toast({ title: "Conversion failed", description: err?.message || "Unknown error", variant: "destructive" });
+      const isAbort = err?.name === "AbortError" || err?.name === "TimeoutError";
+      toast({
+        title: isAbort ? "Conversion cancelled" : "Conversion failed",
+        description: isAbort ? (err?.message || "Request was aborted") : (err?.message || "Unknown error"),
+        variant: "destructive",
+      });
     } finally {
       setIsConverting(false);
       setConvertingChapterNumber(null);
+      if (conversionAbortRef.current === controller) conversionAbortRef.current = null;
     }
   }, [text, detectedChapters, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast, isConverting, convertingAll]);
 
   const handleConvertAll = useCallback(async () => {
+    if (isConverting || convertingAll) return;
     const unconverted = detectedChapters.filter(c => !convertedChapters[c.number]);
     if (unconverted.length === 0) {
       toast({ title: "All chapters converted", description: "Every chapter already has a screenplay." });
       return;
     }
+    const controller = new AbortController();
+    conversionAbortRef.current = controller;
     setConvertingAll(true); setConvertAllProgress(0);
+    let processed = 0;
+    let cancelled = false;
     for (let i = 0; i < unconverted.length; i++) {
+      if (controller.signal.aborted) { cancelled = true; break; }
       setConvertAllProgress(i + 1);
+      const ch = unconverted[i];
+      setConvertingChapterNumber(ch.number);
       try {
-        const ch = unconverted[i];
         const r = await apiRequest("POST", "/api/convert", {
           text, chapterNumber: ch.number, chapterTitle: ch.title,
           provider, apiKey, genre, pacing, dialogueStyle, sceneDetail,
-        });
+        }, { signal: controller.signal, timeoutMs: PER_CHAPTER_TIMEOUT_MS });
         const data = await r.json();
         const converted = data.converted || data;
         setConvertedChapters(prev => ({ ...prev, [ch.number]: converted }));
+        processed++;
       } catch (err: any) {
-        console.error(`Convert chapter ${unconverted[i].number} failed:`, err);
-        toast({ title: `Chapter ${unconverted[i].number} failed`, description: err.message || "Conversion error", variant: "destructive" });
+        const isAbort = err?.name === "AbortError" || err?.name === "TimeoutError";
+        console.error(`Convert chapter ${ch.number} failed:`, err);
+        if (isAbort && controller.signal.aborted) { cancelled = true; break; }
+        toast({
+          title: `Chapter ${ch.number} ${isAbort ? "timed out" : "failed"}`,
+          description: err?.message || "Conversion error",
+          variant: "destructive",
+        });
       }
-      if (i < unconverted.length - 1) await new Promise(r => setTimeout(r, 3000));
+      if (i < unconverted.length - 1 && !controller.signal.aborted) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
     }
-    setConvertingAll(false); setConvertAllProgress(0);
-    toast({ title: "All chapters converted", description: `${unconverted.length} chapters processed.` });
-  }, [detectedChapters, convertedChapters, text, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast]);
+    setConvertingAll(false);
+    setConvertAllProgress(0);
+    setConvertingChapterNumber(null);
+    if (conversionAbortRef.current === controller) conversionAbortRef.current = null;
+    toast({
+      title: cancelled ? "Conversion cancelled" : "All chapters converted",
+      description: `${processed} of ${unconverted.length} chapters processed${cancelled ? " before cancel" : ""}.`,
+    });
+  }, [detectedChapters, convertedChapters, text, provider, apiKey, genre, pacing, dialogueStyle, sceneDetail, toast, isConverting, convertingAll]);
 
   // ── Export ──
   const handleExport = useCallback(async (format: "fountain" | "pdf" | "docx") => {
@@ -1117,10 +1160,15 @@ export default function Home() {
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" className="border-gray-700 text-gray-300" onClick={() => setStep("upload")}><ArrowLeft className="w-4 h-4 mr-1" /> Back</Button>
-                <Button className="bg-[#00d4aa] hover:bg-[#00b894] text-black font-semibold" onClick={handleConvertAll} disabled={convertingAll} data-testid="button-convert-all">
+                <Button className="bg-[#00d4aa] hover:bg-[#00b894] text-black font-semibold" onClick={handleConvertAll} disabled={convertingAll || isConverting} data-testid="button-convert-all">
                   {convertingAll ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Sparkles className="w-4 h-4 mr-1" />}
-                  {convertingAll ? `Converting ${convertAllProgress}...` : `Convert All (${Math.max(0, detectedChapters.length - convertedCount)} remaining)`}
+                  {convertingAll ? `Converting ${convertAllProgress}/${Math.max(0, detectedChapters.length - convertedCount + convertAllProgress - 1)}…` : `Convert All (${Math.max(0, detectedChapters.length - convertedCount)} remaining)`}
                 </Button>
+                {(convertingAll || isConverting) && (
+                  <Button variant="outline" className="border-red-700 text-red-400 hover:bg-red-950 hover:text-red-300" onClick={cancelConversion} data-testid="button-cancel-convert">
+                    Cancel
+                  </Button>
+                )}
                 {convertedCount > 0 && (
                   <Button variant="outline" className="border-gray-700 text-gray-300" onClick={() => { setStep("viewer"); setSelectedChapter(Number(Object.keys(convertedChapters)[0])); }}>
                     <FileText className="w-4 h-4 mr-1" /> View Screenplay
@@ -1194,9 +1242,15 @@ export default function Home() {
                       <Button size="sm" className={isConverted ? "bg-gray-700 hover:bg-gray-600 text-white w-full" : "bg-[#00d4aa] hover:bg-[#00b894] text-black w-full"} onClick={() => {
                         if (isConverted) { setSelectedChapter(ch.number); setStep("viewer"); }
                         else handleConvert(ch.number);
-                      }} disabled={isConverting} data-testid={`button-convert-${ch.number}`}>
-                        {isConverting ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
-                        {isConverted ? <>View Screenplay <ChevronRight className="w-4 h-4 ml-1" /></> : <>Convert to Screenplay <Sparkles className="w-4 h-4 ml-1" /></>}
+                      }} disabled={(isConverting || convertingAll) && !isConverted} data-testid={`button-convert-${ch.number}`}>
+                        {convertingChapterNumber === ch.number && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                        {isConverted
+                          ? (<>View Screenplay <ChevronRight className="w-4 h-4 ml-1" /></>)
+                          : convertingChapterNumber === ch.number
+                            ? (<>Converting…</>)
+                            : (isConverting || convertingAll)
+                              ? (<>Waiting…</>)
+                              : (<>Convert to Screenplay <Sparkles className="w-4 h-4 ml-1" /></>)}
                       </Button>
                     </CardContent>
                   </Card>
