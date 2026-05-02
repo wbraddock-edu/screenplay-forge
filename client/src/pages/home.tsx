@@ -479,9 +479,25 @@ export default function Home() {
   }, [autoScanAfterImport, text, handleScan]);
 
   // ── Convert ──
-  // Per-chapter timeout: most chapters complete in 30–60s on Gemini; 120s leaves
-  // headroom for long chapters but kills genuinely hung requests.
-  const PER_CHAPTER_TIMEOUT_MS = 120_000;
+  // Per-chapter timeout: most chapters complete in 30–60s on Gemini, but Anthropic
+  // and longer chapters can run 90–180s. 240s leaves comfortable headroom while
+  // still killing genuinely hung requests. Server allows up to 5 min (300s).
+  const PER_CHAPTER_TIMEOUT_MS = 240_000;
+
+  // Elapsed-second counter for the spinner so users see the request is alive.
+  const [convertElapsed, setConvertElapsed] = useState<number>(0);
+  useEffect(() => {
+    if (!isConverting && !convertingAll) {
+      setConvertElapsed(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setConvertElapsed(0);
+    const id = setInterval(() => {
+      setConvertElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isConverting, convertingAll, convertingChapterNumber]);
 
   const cancelConversion = useCallback(() => {
     if (conversionAbortRef.current) {
@@ -1274,7 +1290,7 @@ export default function Home() {
                         {isConverted
                           ? (<>View Screenplay <ChevronRight className="w-4 h-4 ml-1" /></>)
                           : convertingChapterNumber === ch.number
-                            ? (<>Converting…</>)
+                            ? (<>Converting… {convertElapsed}s</>)
                             : (isConverting || convertingAll)
                               ? (<>Waiting…</>)
                               : (<>Convert to Screenplay <Sparkles className="w-4 h-4 ml-1" /></>)}
